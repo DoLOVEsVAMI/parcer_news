@@ -4,6 +4,8 @@
 - `explicit_ad` — есть сильные маркеры рекламы (или набран порог score),
 - `not_explicit_ad` — явной рекламы нет.
 
+После каждого запуска скрипт также создает HTML-отчет (по умолчанию `vk_posts_report.html`) c адаптивной версткой для мобильных устройств.
+
 ## Нужен ли API токен?
 
 Не обязательно.
@@ -26,7 +28,8 @@ python vk_news_parser.py \
   --domains lenta_ru meduzalive \
   --count 20 \
   --rules-json rules.strict_explicit_ads_min_fp.json \
-  --pretty
+  --pretty \
+  --html-output vk_posts_report.html
 ```
 
 ## Быстрый запуск (через API)
@@ -38,7 +41,8 @@ python vk_news_parser.py \
   --domains lenta_ru meduzalive \
   --count 20 \
   --rules-json rules.strict_explicit_ads_min_fp.json \
-  --pretty
+  --pretty \
+  --html-output vk_posts_report.html
 ```
 
 
@@ -78,6 +82,13 @@ python vk_news_parser.py --source-mode api --domains lenta_ru https://vk.com/rsp
 - `--rules-json` — JSON с правилами (по умолчанию встроенный пресет)
 - `--only-not-blocked` — вывести только `not_explicit_ad`
 - `--pretty` — красивый JSON вывод
+- `--html-output` — путь к HTML-отчету (по умолчанию `vk_posts_report.html`)
+
+## HTML-отчет
+
+- В отчете сохраняются переносы строк поста (`\n`) и форматирование текста выглядит близко к оригиналу поста.
+- Есть адаптация под мобильные экраны (responsive).
+- В HTML попадают как посты, так и диагностические `error`/`warning` записи.
 
 ## Формат результата
 

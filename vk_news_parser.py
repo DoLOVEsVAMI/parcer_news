@@ -9,6 +9,7 @@ Supports two data sources:
 from __future__ import annotations
 
 import argparse
+from datetime import datetime
 import html
 import json
 import os
@@ -338,6 +339,103 @@ def extract_post_text(page_html: str) -> str:
     return ""
 
 
+def normalize_post_text(text: str) -> str:
+    normalized = (text or "").replace("\r\n", "\n").replace("\r", "\n")
+    normalized = normalized.replace("\\n", "\n")
+    normalized = "\n".join(line.rstrip() for line in normalized.split("\n"))
+    return normalized.strip()
+
+
+def render_html_report(results: List[Dict[str, Any]], output_path: str) -> None:
+    generated_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    cards: List[str] = []
+
+    for item in results:
+        if "error" in item:
+            cards.append(
+                (
+                    '<article class="card card-error">'
+                    f'<div class="meta"><b>Источник:</b> {html.escape(str(item.get("source", "-")))}</div>'
+                    f'<div class="meta"><b>Режим:</b> {html.escape(str(item.get("source_mode", "-")))}</div>'
+                    f'<div class="error">Ошибка: {html.escape(str(item.get("error", "-")))}</div>'
+                    '</article>'
+                )
+            )
+            continue
+
+        if "warning" in item:
+            cards.append(
+                (
+                    '<article class="card card-warning">'
+                    f'<div class="meta"><b>Источник:</b> {html.escape(str(item.get("source", "-")))}</div>'
+                    f'<div class="warning">{html.escape(str(item.get("warning", "")))}</div>'
+                    '</article>'
+                )
+            )
+            continue
+
+        post_text = html.escape(normalize_post_text(str(item.get("text", ""))))
+        label = html.escape(str(item.get("label", "-")))
+        label_cls = "label-blocked" if item.get("blocked") else "label-ok"
+        post_url = html.escape(str(item.get("post_url", "#")))
+
+        cards.append(
+            (
+                '<article class="card">'
+                f'<div class="meta"><b>Источник:</b> {html.escape(str(item.get("source", "-")))}</div>'
+                f'<div class="meta"><b>Пост:</b> <a href="{post_url}" target="_blank" rel="noopener">{post_url}</a></div>'
+                f'<div class="meta"><b>Дата:</b> {html.escape(str(item.get("date", "-")))}</div>'
+                f'<div class="meta"><b>Оценка:</b> <span class="label {label_cls}">{label}</span> (score={html.escape(str(item.get("score", 0)))})</div>'
+                f'<div class="post-text">{post_text}</div>'
+                '</article>'
+            )
+        )
+
+    html_doc = f"""<!doctype html>
+<html lang=\"ru\">
+<head>
+  <meta charset=\"utf-8\" />
+  <meta name=\"viewport\" content=\"width=device-width, initial-scale=1\" />
+  <title>VK parser report</title>
+  <style>
+    :root {{ color-scheme: light dark; }}
+    body {{ margin: 0; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: #f5f7fb; color: #1d2433; }}
+    .container {{ max-width: 980px; margin: 0 auto; padding: 20px 16px 40px; }}
+    h1 {{ margin: 0 0 8px; font-size: 24px; }}
+    .sub {{ margin-bottom: 16px; color: #55627a; font-size: 14px; }}
+    .grid {{ display: grid; gap: 12px; }}
+    .card {{ background: #fff; border: 1px solid #e5eaf2; border-radius: 12px; padding: 14px; box-shadow: 0 1px 2px rgba(0,0,0,.04); }}
+    .meta {{ margin-bottom: 6px; font-size: 14px; line-height: 1.35; word-break: break-word; }}
+    .post-text {{ margin-top: 10px; padding-top: 10px; border-top: 1px solid #eef1f6; white-space: pre-wrap; line-height: 1.45; font-size: 15px; }}
+    .label {{ display: inline-block; padding: 2px 8px; border-radius: 999px; font-size: 12px; font-weight: 600; }}
+    .label-ok {{ background: #e8f8ef; color: #1e7a46; }}
+    .label-blocked {{ background: #ffe9e9; color: #a73737; }}
+    .card-error {{ border-color: #f3b1b1; background: #fff7f7; }}
+    .card-warning {{ border-color: #f3d8a8; background: #fffaf1; }}
+    .error {{ color: #a73737; font-weight: 600; }}
+    .warning {{ color: #8a5b00; font-weight: 600; }}
+    @media (max-width: 640px) {{
+      .container {{ padding: 12px 10px 24px; }}
+      h1 {{ font-size: 20px; }}
+      .meta {{ font-size: 13px; }}
+      .post-text {{ font-size: 14px; }}
+    }}
+  </style>
+</head>
+<body>
+  <main class=\"container\">
+    <h1>VK parser report</h1>
+    <div class=\"sub\">Сгенерировано: {html.escape(generated_at)} • Записей: {len(results)}</div>
+    <section class=\"grid\">{''.join(cards) if cards else '<article class="card">Нет данных для отображения.</article>'}</section>
+  </main>
+</body>
+</html>
+"""
+
+    with open(output_path, "w", encoding="utf-8") as f:
+        f.write(html_doc)
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Парсер постов VK с детектором явной рекламы")
     parser.add_argument("--token", default=os.getenv("VK_TOKEN"), help="VK API token (для --source-mode api)")
@@ -347,6 +445,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--rules-json", help="Путь к JSON с правилами. По умолчанию встроенный preset")
     parser.add_argument("--only-not-blocked", action="store_true", help="Выводить только not_explicit_ad")
     parser.add_argument("--pretty", action="store_true", help="Форматировать JSON вывод с отступами")
+    parser.add_argument("--html-output", default="vk_posts_report.html", help="Путь для HTML-отчета")
     return parser
 
 
@@ -390,7 +489,7 @@ def main() -> int:
             continue
 
         for post in posts:
-            text = post.get("text", "") or ""
+            text = normalize_post_text(post.get("text", "") or "")
             verdict = classifier.classify(text)
             if args.only_not_blocked and verdict["blocked"]:
                 continue
@@ -412,6 +511,7 @@ def main() -> int:
                 }
             )
 
+    render_html_report(results, args.html_output)
     print(json.dumps(results, ensure_ascii=False, indent=2 if args.pretty else None))
     return 0
 
