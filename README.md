@@ -36,6 +36,34 @@ python vk_news_parser.py \
   --pretty
 ```
 
+
+## Запуск в Windows PowerShell
+
+Важно: не вставляйте аргументы по одной строке отдельно. Команда должна быть одной командой.
+
+**Вариант 1: одной строкой (проще всего)**
+
+```powershell
+python vk_news_parser.py --source-mode web --domains lenta_ru https://vk.com/rsportru --count 20 --pretty
+```
+
+**Вариант 2: переносы строк в PowerShell** (используйте обратную кавычку `` ` ``, а не `\`)
+
+```powershell
+python vk_news_parser.py `
+  --source-mode web `
+  --domains lenta_ru https://vk.com/rsportru `
+  --count 20 `
+  --pretty
+```
+
+Если нужен API-режим:
+
+```powershell
+$env:VK_TOKEN = "ваш_токен"
+python vk_news_parser.py --source-mode api --domains lenta_ru https://vk.com/rsportru --count 20 --pretty
+```
+
 ## Аргументы
 
 - `--token` — VK API token (для `--source-mode api`; или переменная `VK_TOKEN`)
