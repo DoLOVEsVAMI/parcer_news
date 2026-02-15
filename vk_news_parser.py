@@ -214,13 +214,24 @@ class VKClient:
         if not domain or domain.lstrip("-").isdigit():
             raise RuntimeError("Web режим поддерживает только domain/URL паблика, не owner_id")
 
-        feed_html = self._http_get(f"{self.MOBILE_URL}/{domain}")
-        candidates = re.findall(r'href="(/wall-?\d+_\d+[^"]*)"', feed_html)
+        feed_urls = [
+            f"{self.MOBILE_URL}/{domain}",
+            f"https://vk.com/{domain}",
+        ]
+
+        candidates: List[str] = []
+        for feed_url in feed_urls:
+            try:
+                feed_html = self._http_get(feed_url)
+            except Exception:
+                continue
+            candidates.extend(re.findall(r'href="(/wall-?\d+_\d+[^"]*)"', feed_html))
+            candidates.extend(re.findall(r"(?:\\/|/)wall-?\d+_\d+", feed_html))
 
         seen: Set[str] = set()
         links: List[str] = []
         for link in candidates:
-            clean = html.unescape(link.split("?")[0])
+            clean = html.unescape(link.replace("\\/", "/").split("?")[0])
             wall_match = re.search(r"/wall(-?\d+_\d+)", clean)
             if not wall_match:
                 continue
@@ -232,9 +243,17 @@ class VKClient:
             if len(links) >= count:
                 break
 
+        if not links:
+            raise RuntimeError(
+                "Не удалось найти посты на веб-странице паблика. Попробуйте --source-mode api с VK_TOKEN"
+            )
+
         posts: List[Dict[str, Any]] = []
         for link in links:
-            page = self._http_get(link)
+            try:
+                page = self._http_get(link)
+            except Exception:
+                continue
             post_key = re.search(r"wall(-?\d+_\d+)", link).group(1)  # type: ignore[union-attr]
             owner_id_str, post_id_str = post_key.split("_")
 
@@ -252,6 +271,11 @@ class VKClient:
                     "owner_id": int(owner_id_str),
                     "post_url": f"https://vk.com/wall{post_key}",
                 }
+            )
+
+        if not posts:
+            raise RuntimeError(
+                "Посты найдены, но текст не удалось извлечь. Попробуйте --source-mode api с VK_TOKEN"
             )
 
         return posts
@@ -324,6 +348,16 @@ def main() -> int:
                 posts = client.fetch_wall_posts_web(domain_or_url=source, count=args.count)
         except Exception as exc:
             results.append({"source": source, "error": str(exc), "source_mode": mode})
+            continue
+
+        if not posts:
+            results.append(
+                {
+                    "source": source,
+                    "source_mode": mode,
+                    "warning": "Посты не найдены (пустой результат).",
+                }
+            )
             continue
 
         for post in posts:
