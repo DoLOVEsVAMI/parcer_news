@@ -217,46 +217,50 @@ class VKClient:
         feed_urls = [
             f"{self.MOBILE_URL}/{domain}",
             f"https://vk.com/{domain}",
+            f"https://vk.com/{domain}?w=wall",
         ]
 
-        candidates: List[str] = []
+        post_keys: List[str] = []
         for feed_url in feed_urls:
             try:
                 feed_html = self._http_get(feed_url)
             except Exception:
                 continue
-            candidates.extend(re.findall(r'href="(/wall-?\d+_\d+[^"]*)"', feed_html))
-            candidates.extend(re.findall(r"(?:\\/|/)wall-?\d+_\d+", feed_html))
+            post_keys.extend(extract_post_keys(feed_html))
 
         seen: Set[str] = set()
-        links: List[str] = []
-        for link in candidates:
-            clean = html.unescape(link.replace("\\/", "/").split("?")[0])
-            wall_match = re.search(r"/wall(-?\d+_\d+)", clean)
-            if not wall_match:
+        ordered_keys: List[str] = []
+        for key in post_keys:
+            if key in seen:
                 continue
-            post_key = wall_match.group(1)
-            if post_key in seen:
-                continue
-            seen.add(post_key)
-            links.append(f"{self.MOBILE_URL}/wall{post_key}")
-            if len(links) >= count:
+            seen.add(key)
+            ordered_keys.append(key)
+            if len(ordered_keys) >= count:
                 break
 
-        if not links:
+        if not ordered_keys:
             raise RuntimeError(
-                "Не удалось найти посты на веб-странице паблика. Попробуйте --source-mode api с VK_TOKEN"
+                "Не удалось найти post id на веб-странице паблика. Для стабильной выдачи используйте --source-mode api с VK_TOKEN"
             )
 
         posts: List[Dict[str, Any]] = []
-        for link in links:
-            try:
-                page = self._http_get(link)
-            except Exception:
+        for post_key in ordered_keys:
+            pages_to_try = [
+                f"{self.MOBILE_URL}/wall{post_key}",
+                f"https://vk.com/wall{post_key}",
+            ]
+            page = ""
+            for page_url in pages_to_try:
+                try:
+                    page = self._http_get(page_url)
+                    if page:
+                        break
+                except Exception:
+                    continue
+            if not page:
                 continue
-            post_key = re.search(r"wall(-?\d+_\d+)", link).group(1)  # type: ignore[union-attr]
-            owner_id_str, post_id_str = post_key.split("_")
 
+            owner_id_str, post_id_str = post_key.split("_")
             text = extract_post_text(page)
             date_value: Optional[str] = None
             date_match = re.search(r'itemprop="datePublished"\s+content="([^"]+)"', page)
@@ -275,11 +279,36 @@ class VKClient:
 
         if not posts:
             raise RuntimeError(
-                "Посты найдены, но текст не удалось извлечь. Попробуйте --source-mode api с VK_TOKEN"
+                "Post id найдены, но страницы постов недоступны. Для стабильной выдачи используйте --source-mode api с VK_TOKEN"
             )
 
         return posts
 
+
+
+def extract_post_keys(feed_html: str) -> List[str]:
+    patterns = [
+        r'href="(?:\/|/)?wall(-?\d+_\d+)(?:[^"\s]*)"',
+        r'(?:^|[^a-z_])wall(-?\d+_\d+)(?:$|[^\d])',
+        r'post-(-?\d+_\d+)',
+    ]
+
+    keys: List[str] = []
+    for pattern in patterns:
+        keys.extend(re.findall(pattern, feed_html))
+
+    normalized: List[str] = []
+    seen: Set[str] = set()
+    for key in keys:
+        clean = html.unescape(key).replace('\/', '/')
+        clean = clean.strip('/').replace('wall', '')
+        if not re.fullmatch(r'-?\d+_\d+', clean):
+            continue
+        if clean in seen:
+            continue
+        seen.add(clean)
+        normalized.append(clean)
+    return normalized
 
 def normalize_domain(value: str) -> str:
     raw = value.strip().rstrip("/")
