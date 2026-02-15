@@ -1,25 +1,23 @@
 #!/usr/bin/env python3
 """VK news public parser with explicit-ad filtering rules.
 
-Usage example:
-  python vk_news_parser.py \
-    --token "$VK_TOKEN" \
-    --domains lenta_ru meduzalive \
-    --count 20
+Supports two data sources:
+- API mode: official VK API (`utils.resolveScreenName` + `wall.get`) — requires token.
+- Web mode: parse public pages from m.vk.com — token is not required.
 """
 
 from __future__ import annotations
 
 import argparse
+import html
 import json
 import os
 import re
 import sys
 from dataclasses import dataclass
-from typing import Any, Dict, Iterable, List, Optional, Tuple
-
+from typing import Any, Dict, Iterable, List, Optional, Set
 from urllib.parse import urlencode, urlparse
-from urllib.request import urlopen
+from urllib.request import Request, urlopen
 
 
 DEFAULT_RULESET: Dict[str, Any] = {
@@ -109,10 +107,8 @@ class Rule:
 
 class ExplicitAdClassifier:
     def __init__(self, config: Dict[str, Any]) -> None:
-        self.config = config
         self.score_threshold = int(config["decision"].get("score_threshold", 10))
         self.block_if_any_strong = bool(config["decision"].get("block_if_any_strong_rule_matches", True))
-
         self.strong_rules = self._compile_rules(config["rules"]["strong_blocklist"], strong=True)
         self.support_rules = self._compile_rules(config["rules"].get("optional_support_signals", []), strong=False)
 
@@ -156,10 +152,8 @@ class ExplicitAdClassifier:
                     matched_fragments.append(fragment[:160])
 
         blocked = (self.block_if_any_strong and strong_hit) or (score >= self.score_threshold)
-        label = self.blocked_label if blocked else self.not_blocked_label
-
         return {
-            "label": label,
+            "label": self.blocked_label if blocked else self.not_blocked_label,
             "blocked": blocked,
             "matched_rule_ids": matched_rule_ids,
             "matched_fragments": matched_fragments,
@@ -169,22 +163,24 @@ class ExplicitAdClassifier:
 
 class VKClient:
     API_URL = "https://api.vk.com/method"
+    MOBILE_URL = "https://m.vk.com"
 
-    def __init__(self, token: str, version: str = "5.199", timeout: int = 20) -> None:
+    def __init__(self, token: Optional[str], version: str = "5.199", timeout: int = 20) -> None:
         self.token = token
         self.version = version
         self.timeout = timeout
 
+    def _http_get(self, url: str) -> str:
+        req = Request(url, headers={"User-Agent": "Mozilla/5.0 CodexVKParser/1.0"})
+        with urlopen(req, timeout=self.timeout) as response:
+            return response.read().decode("utf-8", errors="replace")
+
     def _call(self, method: str, params: Dict[str, Any]) -> Dict[str, Any]:
-        payload = {
-            **params,
-            "access_token": self.token,
-            "v": self.version,
-        }
-        query = urlencode(payload)
-        url = f"{self.API_URL}/{method}?{query}"
-        with urlopen(url, timeout=self.timeout) as response:
-            data = json.loads(response.read().decode("utf-8"))
+        if not self.token:
+            raise RuntimeError("VK token обязателен для API режима")
+        payload = {**params, "access_token": self.token, "v": self.version}
+        url = f"{self.API_URL}/{method}?{urlencode(payload)}"
+        data = json.loads(self._http_get(url))
         if "error" in data:
             raise RuntimeError(f"VK API error ({method}): {data['error']}")
         return data["response"]
@@ -195,11 +191,7 @@ class VKClient:
         if domain_or_owner.isdigit():
             return int(domain_or_owner)
 
-        raw = domain_or_owner.strip().rstrip("/")
-        if raw.startswith("http://") or raw.startswith("https://"):
-            parsed = urlparse(raw)
-            raw = parsed.path.strip("/")
-
+        raw = normalize_domain(domain_or_owner)
         entity = self._call("utils.resolveScreenName", {"screen_name": raw})
         if not entity:
             raise RuntimeError(f"Не удалось определить owner_id для '{domain_or_owner}'")
@@ -210,24 +202,95 @@ class VKClient:
             return -obj_id
         return obj_id
 
-    def fetch_wall_posts(self, owner_id: int, count: int = 20) -> List[Dict[str, Any]]:
+    def fetch_wall_posts_api(self, owner_id: int, count: int = 20) -> List[Dict[str, Any]]:
         resp = self._call(
             "wall.get",
-            {
-                "owner_id": owner_id,
-                "count": count,
-                "filter": "owner",
-                "extended": 0,
-            },
+            {"owner_id": owner_id, "count": count, "filter": "owner", "extended": 0},
         )
         return resp.get("items", [])
+
+    def fetch_wall_posts_web(self, domain_or_url: str, count: int = 20) -> List[Dict[str, Any]]:
+        domain = normalize_domain(domain_or_url)
+        if not domain or domain.lstrip("-").isdigit():
+            raise RuntimeError("Web режим поддерживает только domain/URL паблика, не owner_id")
+
+        feed_html = self._http_get(f"{self.MOBILE_URL}/{domain}")
+        candidates = re.findall(r'href="(/wall-?\d+_\d+[^"]*)"', feed_html)
+
+        seen: Set[str] = set()
+        links: List[str] = []
+        for link in candidates:
+            clean = html.unescape(link.split("?")[0])
+            wall_match = re.search(r"/wall(-?\d+_\d+)", clean)
+            if not wall_match:
+                continue
+            post_key = wall_match.group(1)
+            if post_key in seen:
+                continue
+            seen.add(post_key)
+            links.append(f"{self.MOBILE_URL}/wall{post_key}")
+            if len(links) >= count:
+                break
+
+        posts: List[Dict[str, Any]] = []
+        for link in links:
+            page = self._http_get(link)
+            post_key = re.search(r"wall(-?\d+_\d+)", link).group(1)  # type: ignore[union-attr]
+            owner_id_str, post_id_str = post_key.split("_")
+
+            text = extract_post_text(page)
+            date_value: Optional[str] = None
+            date_match = re.search(r'itemprop="datePublished"\s+content="([^"]+)"', page)
+            if date_match:
+                date_value = date_match.group(1)
+
+            posts.append(
+                {
+                    "id": int(post_id_str),
+                    "date": date_value,
+                    "text": text,
+                    "owner_id": int(owner_id_str),
+                    "post_url": f"https://vk.com/wall{post_key}",
+                }
+            )
+
+        return posts
+
+
+def normalize_domain(value: str) -> str:
+    raw = value.strip().rstrip("/")
+    if raw.startswith("http://") or raw.startswith("https://"):
+        parsed = urlparse(raw)
+        raw = parsed.path.strip("/")
+    return raw
+
+
+def strip_tags(raw_html: str) -> str:
+    cleaned = re.sub(r"<br\s*/?>", "\n", raw_html, flags=re.IGNORECASE)
+    cleaned = re.sub(r"<[^>]+>", " ", cleaned)
+    cleaned = html.unescape(cleaned)
+    cleaned = re.sub(r"\s+", " ", cleaned)
+    return cleaned.strip()
+
+
+def extract_post_text(page_html: str) -> str:
+    meta_match = re.search(r'<meta\s+property="og:description"\s+content="([^"]*)"', page_html)
+    if meta_match:
+        return html.unescape(meta_match.group(1)).strip()
+
+    text_match = re.search(r'<div[^>]*class="[^"]*pi_text[^"]*"[^>]*>(.*?)</div>', page_html, flags=re.DOTALL)
+    if text_match:
+        return strip_tags(text_match.group(1))
+
+    return ""
 
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Парсер постов VK с детектором явной рекламы")
-    parser.add_argument("--token", default=os.getenv("VK_TOKEN"), help="VK API token (или env VK_TOKEN)")
+    parser.add_argument("--token", default=os.getenv("VK_TOKEN"), help="VK API token (для --source-mode api)")
     parser.add_argument("--domains", nargs="+", required=True, help="Список пабликов: domain/url/owner_id")
     parser.add_argument("--count", type=int, default=20, help="Количество постов на паблик")
+    parser.add_argument("--source-mode", choices=["auto", "api", "web"], default="auto", help="Источник постов")
     parser.add_argument("--rules-json", help="Путь к JSON с правилами. По умолчанию встроенный preset")
     parser.add_argument("--only-not-blocked", action="store_true", help="Выводить только not_explicit_ad")
     parser.add_argument("--pretty", action="store_true", help="Форматировать JSON вывод с отступами")
@@ -243,23 +306,24 @@ def load_rules(path: Optional[str]) -> Dict[str, Any]:
 
 def main() -> int:
     args = build_parser().parse_args()
-
-    if not args.token:
-        print("Ошибка: передайте --token или задайте VK_TOKEN", file=sys.stderr)
-        return 2
+    mode = args.source_mode
+    if mode == "auto":
+        mode = "api" if args.token else "web"
 
     rules = load_rules(args.rules_json)
     classifier = ExplicitAdClassifier(rules)
     client = VKClient(args.token)
-
     results: List[Dict[str, Any]] = []
 
     for source in args.domains:
         try:
-            owner_id = client.resolve_owner_id(source)
-            posts = client.fetch_wall_posts(owner_id=owner_id, count=args.count)
+            if mode == "api":
+                owner_id = client.resolve_owner_id(source)
+                posts = client.fetch_wall_posts_api(owner_id=owner_id, count=args.count)
+            else:
+                posts = client.fetch_wall_posts_web(domain_or_url=source, count=args.count)
         except Exception as exc:
-            results.append({"source": source, "error": str(exc)})
+            results.append({"source": source, "error": str(exc), "source_mode": mode})
             continue
 
         for post in posts:
@@ -268,22 +332,24 @@ def main() -> int:
             if args.only_not_blocked and verdict["blocked"]:
                 continue
 
+            owner_id = post.get("owner_id")
+            if owner_id is None and mode == "api":
+                owner_id = client.resolve_owner_id(source)
+
             results.append(
                 {
                     "source": source,
+                    "source_mode": mode,
                     "owner_id": owner_id,
                     "post_id": post.get("id"),
                     "date": post.get("date"),
                     "text": text,
                     **verdict,
-                    "post_url": f"https://vk.com/wall{owner_id}_{post.get('id')}",
+                    "post_url": post.get("post_url") or f"https://vk.com/wall{owner_id}_{post.get('id')}",
                 }
             )
 
-    if args.pretty:
-        print(json.dumps(results, ensure_ascii=False, indent=2))
-    else:
-        print(json.dumps(results, ensure_ascii=False))
+    print(json.dumps(results, ensure_ascii=False, indent=2 if args.pretty else None))
     return 0
 
 
