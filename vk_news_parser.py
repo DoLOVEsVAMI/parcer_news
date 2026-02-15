@@ -375,18 +375,24 @@ def render_html_report(results: List[Dict[str, Any]], output_path: str) -> None:
             continue
 
         post_text = html.escape(normalize_post_text(str(item.get("text", ""))))
-        label = html.escape(str(item.get("label", "-")))
-        label_cls = "label-blocked" if item.get("blocked") else "label-ok"
         post_url = html.escape(str(item.get("post_url", "#")))
+        photo_urls = item.get("photo_urls") or []
+        gallery_html = ""
+        if isinstance(photo_urls, list) and photo_urls:
+            images = []
+            for photo_url in photo_urls:
+                safe_url = html.escape(str(photo_url))
+                images.append(
+                    f'<a href="{safe_url}" target="_blank" rel="noopener"><img src="{safe_url}" loading="lazy" alt="photo" /></a>'
+                )
+            gallery_html = f'<div class="gallery">{"".join(images)}</div>'
 
         cards.append(
             (
                 '<article class="card">'
-                f'<div class="meta"><b>Источник:</b> {html.escape(str(item.get("source", "-")))}</div>'
-                f'<div class="meta"><b>Пост:</b> <a href="{post_url}" target="_blank" rel="noopener">{post_url}</a></div>'
-                f'<div class="meta"><b>Дата:</b> {html.escape(str(item.get("date", "-")))}</div>'
-                f'<div class="meta"><b>Оценка:</b> <span class="label {label_cls}">{label}</span> (score={html.escape(str(item.get("score", 0)))})</div>'
+                f'{gallery_html}'
                 f'<div class="post-text">{post_text}</div>'
+                f'<div class="post-link"><a href="{post_url}" target="_blank" rel="noopener">Открыть пост во VK</a></div>'
                 '</article>'
             )
         )
@@ -406,10 +412,12 @@ def render_html_report(results: List[Dict[str, Any]], output_path: str) -> None:
     .grid {{ display: grid; gap: 12px; }}
     .card {{ background: #fff; border: 1px solid #e5eaf2; border-radius: 12px; padding: 14px; box-shadow: 0 1px 2px rgba(0,0,0,.04); }}
     .meta {{ margin-bottom: 6px; font-size: 14px; line-height: 1.35; word-break: break-word; }}
+    .gallery {{ display: grid; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); gap: 8px; margin-bottom: 10px; }}
+    .gallery a {{ display: block; border-radius: 10px; overflow: hidden; border: 1px solid #e6eaf1; background: #f0f3f8; }}
+    .gallery img {{ width: 100%; height: 100%; aspect-ratio: 4/3; object-fit: cover; display: block; }}
     .post-text {{ margin-top: 10px; padding-top: 10px; border-top: 1px solid #eef1f6; white-space: pre-wrap; line-height: 1.45; font-size: 15px; }}
-    .label {{ display: inline-block; padding: 2px 8px; border-radius: 999px; font-size: 12px; font-weight: 600; }}
-    .label-ok {{ background: #e8f8ef; color: #1e7a46; }}
-    .label-blocked {{ background: #ffe9e9; color: #a73737; }}
+    .post-link {{ margin-top: 10px; font-size: 14px; }}
+    .post-link a {{ text-decoration: none; color: #2a5bd7; }}
     .card-error {{ border-color: #f3b1b1; background: #fff7f7; }}
     .card-warning {{ border-color: #f3d8a8; background: #fffaf1; }}
     .error {{ color: #a73737; font-weight: 600; }}
@@ -418,6 +426,7 @@ def render_html_report(results: List[Dict[str, Any]], output_path: str) -> None:
       .container {{ padding: 12px 10px 24px; }}
       h1 {{ font-size: 20px; }}
       .meta {{ font-size: 13px; }}
+      .gallery {{ grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 6px; }}
       .post-text {{ font-size: 14px; }}
     }}
   </style>
@@ -447,6 +456,23 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--pretty", action="store_true", help="Форматировать JSON вывод с отступами")
     parser.add_argument("--html-output", default="vk_posts_report.html", help="Путь для HTML-отчета")
     return parser
+
+
+def extract_photo_urls(post: Dict[str, Any]) -> List[str]:
+    photos: List[str] = []
+    attachments = post.get("attachments") or []
+    for attachment in attachments:
+        if attachment.get("type") != "photo":
+            continue
+        photo_obj = attachment.get("photo") or {}
+        sizes = photo_obj.get("sizes") or []
+        if not sizes:
+            continue
+        best = max(sizes, key=lambda s: int(s.get("width", 0)) * int(s.get("height", 0)))
+        photo_url = best.get("url")
+        if photo_url:
+            photos.append(str(photo_url))
+    return photos
 
 
 def load_rules(path: Optional[str]) -> Dict[str, Any]:
@@ -506,6 +532,7 @@ def main() -> int:
                     "post_id": post.get("id"),
                     "date": post.get("date"),
                     "text": text,
+                    "photo_urls": extract_photo_urls(post),
                     **verdict,
                     "post_url": post.get("post_url") or f"https://vk.com/wall{owner_id}_{post.get('id')}",
                 }
