@@ -9,9 +9,11 @@ Supports two data sources:
 from __future__ import annotations
 
 import argparse
+import base64
 from datetime import datetime
 import html
 import json
+import mimetypes
 import os
 import re
 import sys
@@ -273,6 +275,8 @@ class VKClient:
                     "id": int(post_id_str),
                     "date": date_value,
                     "text": text,
+                    "raw_html": page,
+                    "photo_urls": extract_web_photo_urls(page),
                     "owner_id": int(owner_id_str),
                     "post_url": f"https://vk.com/wall{post_key}",
                 }
@@ -339,6 +343,33 @@ def extract_post_text(page_html: str) -> str:
     return ""
 
 
+def extract_web_photo_urls(page_html: str) -> List[str]:
+    urls: List[str] = []
+    og_image = re.findall(r'<meta\s+property="og:image"\s+content="([^"]+)"', page_html)
+    img_tags = re.findall(r'<img[^>]+src="([^"]+)"', page_html)
+
+    for candidate in [*og_image, *img_tags]:
+        unescaped = html.unescape(candidate)
+        if unescaped.startswith("//"):
+            unescaped = f"https:{unescaped}"
+        if unescaped.startswith("/"):
+            unescaped = f"https://vk.com{unescaped}"
+        if not unescaped.startswith("http"):
+            continue
+        if "emoji" in unescaped or "sticker" in unescaped:
+            continue
+        urls.append(unescaped)
+
+    deduped: List[str] = []
+    seen: Set[str] = set()
+    for u in urls:
+        if u in seen:
+            continue
+        seen.add(u)
+        deduped.append(u)
+    return deduped[:8]
+
+
 def normalize_post_text(text: str) -> str:
     normalized = (text or "").replace("\r\n", "\n").replace("\r", "\n")
     normalized = normalized.replace("\\n", "\n")
@@ -346,9 +377,25 @@ def normalize_post_text(text: str) -> str:
     return normalized.strip()
 
 
+def image_url_to_data_uri(url: str) -> str:
+    req = Request(url, headers={"User-Agent": "Mozilla/5.0 CodexVKParser/1.0"})
+    with urlopen(req, timeout=25) as response:
+        blob = response.read()
+        ctype = response.headers.get("Content-Type", "").split(";")[0].strip()
+
+    if not ctype:
+        guessed = mimetypes.guess_type(url)[0]
+        ctype = guessed or "image/jpeg"
+
+    encoded = base64.b64encode(blob).decode("ascii")
+    return f"data:{ctype};base64,{encoded}"
+
+
 def render_html_report(results: List[Dict[str, Any]], output_path: str) -> None:
     generated_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     cards: List[str] = []
+
+    data_uri_cache: Dict[str, str] = {}
 
     for item in results:
         if "error" in item:
@@ -382,8 +429,15 @@ def render_html_report(results: List[Dict[str, Any]], output_path: str) -> None:
             images = []
             for photo_url in photo_urls:
                 safe_url = html.escape(str(photo_url))
+                display_src = safe_url
+                if safe_url not in data_uri_cache:
+                    try:
+                        data_uri_cache[safe_url] = image_url_to_data_uri(str(photo_url))
+                    except Exception:
+                        data_uri_cache[safe_url] = safe_url
+                display_src = html.escape(data_uri_cache[safe_url])
                 images.append(
-                    f'<a href="{safe_url}" target="_blank" rel="noopener"><img src="{safe_url}" loading="lazy" alt="photo" /></a>'
+                    f'<a href="{safe_url}" target="_blank" rel="noopener"><img src="{display_src}" loading="lazy" alt="photo" /></a>'
                 )
             gallery_html = f'<div class="gallery">{"".join(images)}</div>'
 
@@ -455,6 +509,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--only-not-blocked", action="store_true", help="Выводить только not_explicit_ad")
     parser.add_argument("--pretty", action="store_true", help="Форматировать JSON вывод с отступами")
     parser.add_argument("--html-output", default="vk_posts_report.html", help="Путь для HTML-отчета")
+    parser.add_argument("--json-output", default="json/posts.json", help="Путь для JSON-файла с накоплением постов")
     return parser
 
 
@@ -475,6 +530,44 @@ def extract_photo_urls(post: Dict[str, Any]) -> List[str]:
     return photos
 
 
+def post_key(item: Dict[str, Any]) -> str:
+    source = str(item.get("source", ""))
+    owner_id = str(item.get("owner_id", ""))
+    post_id = str(item.get("post_id", ""))
+    return f"{source}:{owner_id}:{post_id}"
+
+
+def load_existing_posts(path: str) -> List[Dict[str, Any]]:
+    if not os.path.exists(path):
+        return []
+    with open(path, "r", encoding="utf-8") as f:
+        data = json.load(f)
+    if isinstance(data, list):
+        return [x for x in data if isinstance(x, dict)]
+    return []
+
+
+def merge_posts(existing: List[Dict[str, Any]], new_posts: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    seen: Set[str] = set()
+    merged: List[Dict[str, Any]] = []
+
+    for item in new_posts:
+        k = post_key(item)
+        if k in seen:
+            continue
+        seen.add(k)
+        merged.append(item)
+
+    for item in existing:
+        k = post_key(item)
+        if k in seen:
+            continue
+        seen.add(k)
+        merged.append(item)
+
+    return merged
+
+
 def load_rules(path: Optional[str]) -> Dict[str, Any]:
     if not path:
         return DEFAULT_RULESET
@@ -491,7 +584,8 @@ def main() -> int:
     rules = load_rules(args.rules_json)
     classifier = ExplicitAdClassifier(rules)
     client = VKClient(args.token)
-    results: List[Dict[str, Any]] = []
+    run_results: List[Dict[str, Any]] = []
+    new_posts: List[Dict[str, Any]] = []
 
     for source in args.domains:
         try:
@@ -501,11 +595,11 @@ def main() -> int:
             else:
                 posts = client.fetch_wall_posts_web(domain_or_url=source, count=args.count)
         except Exception as exc:
-            results.append({"source": source, "error": str(exc), "source_mode": mode})
+            run_results.append({"source": source, "error": str(exc), "source_mode": mode})
             continue
 
         if not posts:
-            results.append(
+            run_results.append(
                 {
                     "source": source,
                     "source_mode": mode,
@@ -524,22 +618,35 @@ def main() -> int:
             if owner_id is None and mode == "api":
                 owner_id = client.resolve_owner_id(source)
 
-            results.append(
-                {
-                    "source": source,
-                    "source_mode": mode,
-                    "owner_id": owner_id,
-                    "post_id": post.get("id"),
-                    "date": post.get("date"),
-                    "text": text,
-                    "photo_urls": extract_photo_urls(post),
-                    **verdict,
-                    "post_url": post.get("post_url") or f"https://vk.com/wall{owner_id}_{post.get('id')}",
-                }
-            )
+            item = {
+                "source": source,
+                "source_mode": mode,
+                "owner_id": owner_id,
+                "post_id": post.get("id"),
+                "date": post.get("date"),
+                "text": text,
+                "photo_urls": post.get("photo_urls") or extract_photo_urls(post),
+                **verdict,
+                "post_url": post.get("post_url") or f"https://vk.com/wall{owner_id}_{post.get('id')}",
+            }
 
-    render_html_report(results, args.html_output)
-    print(json.dumps(results, ensure_ascii=False, indent=2 if args.pretty else None))
+            if mode == "web" and not item["photo_urls"]:
+                item["photo_urls"] = extract_web_photo_urls(str(post.get("raw_html", "")))
+
+            run_results.append(item)
+            new_posts.append(item)
+
+    json_output_dir = os.path.dirname(args.json_output)
+    if json_output_dir:
+        os.makedirs(json_output_dir, exist_ok=True)
+
+    existing_posts = load_existing_posts(args.json_output)
+    merged_posts = merge_posts(existing_posts, new_posts)
+    with open(args.json_output, "w", encoding="utf-8") as f:
+        json.dump(merged_posts, f, ensure_ascii=False, indent=2)
+
+    render_html_report(merged_posts, args.html_output)
+    print(json.dumps(run_results, ensure_ascii=False, indent=2 if args.pretty else None))
     return 0
 
 

@@ -29,7 +29,8 @@ python vk_news_parser.py \
   --count 20 \
   --rules-json rules.strict_explicit_ads_min_fp.json \
   --pretty \
-  --html-output vk_posts_report.html
+  --html-output vk_posts_report.html \
+  --json-output json/posts.json
 ```
 
 ## Быстрый запуск (через API)
@@ -42,7 +43,8 @@ python vk_news_parser.py \
   --count 20 \
   --rules-json rules.strict_explicit_ads_min_fp.json \
   --pretty \
-  --html-output vk_posts_report.html
+  --html-output vk_posts_report.html \
+  --json-output json/posts.json
 ```
 
 
@@ -83,6 +85,7 @@ python vk_news_parser.py --source-mode api --domains lenta_ru https://vk.com/rsp
 - `--only-not-blocked` — вывести только `not_explicit_ad`
 - `--pretty` — красивый JSON вывод
 - `--html-output` — путь к HTML-отчету (по умолчанию `vk_posts_report.html`)
+- `--json-output` — путь к JSON-файлу с накоплением постов (по умолчанию `json/posts.json`)
 
 ## HTML-отчет
 
@@ -90,7 +93,14 @@ python vk_news_parser.py --source-mode api --domains lenta_ru https://vk.com/rsp
 - Есть адаптация под мобильные экраны (responsive).
 - В HTML попадают как посты, так и диагностические `error`/`warning` записи.
 - Для постов, полученных через API, в HTML отображаются фотографии из вложений поста.
+- Фото вставляются в HTML как обычные изображения (`<img>`), а при доступности сети дополнительно встраиваются в сам HTML (data URI), чтобы страница была самодостаточной.
 - Служебные строки `Источник/Пост/Дата/Оценка` убраны из карточки поста — оставлен текст поста, фотографии и ссылка «Открыть пост во VK».
+
+## Накопление JSON без дублей
+
+- После каждого запуска сохраняется файл `json/posts.json` (или путь из `--json-output`).
+- При следующем запуске скрипт сначала читает этот файл и добавляет только новые посты.
+- Уже сохраненные посты повторно не дублируются.
 
 ## Формат результата
 
