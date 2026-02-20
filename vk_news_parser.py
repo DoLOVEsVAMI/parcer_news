@@ -212,6 +212,35 @@ class VKClient:
         )
         return resp.get("items", [])
 
+    def fetch_wall_total_api(self, owner_id: int) -> int:
+        resp = self._call(
+            "wall.get",
+            {"owner_id": owner_id, "count": 1, "filter": "owner", "extended": 0},
+        )
+        return int(resp.get("count", 0))
+
+    def fetch_wall_posts_api_all(self, owner_id: int, step: int = 100) -> List[Dict[str, Any]]:
+        total = self.fetch_wall_total_api(owner_id)
+        posts: List[Dict[str, Any]] = []
+        offset = 0
+        while offset < total:
+            resp = self._call(
+                "wall.get",
+                {
+                    "owner_id": owner_id,
+                    "count": step,
+                    "offset": offset,
+                    "filter": "owner",
+                    "extended": 0,
+                },
+            )
+            items = resp.get("items", [])
+            if not items:
+                break
+            posts.extend(items)
+            offset += len(items)
+        return posts
+
     def fetch_wall_posts_web(self, domain_or_url: str, count: int = 20) -> List[Dict[str, Any]]:
         domain = normalize_domain(domain_or_url)
         if not domain or domain.lstrip("-").isdigit():
@@ -505,6 +534,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--domains", nargs="+", required=True, help="Список пабликов: domain/url/owner_id")
     parser.add_argument("--count", type=int, default=20, help="Количество постов на паблик")
     parser.add_argument("--source-mode", choices=["auto", "api", "web"], default="auto", help="Источник постов")
+    parser.add_argument("--show-total", action="store_true", help="Показать количество постов в каждом сообществе и выйти")
+    parser.add_argument("--all-posts", action="store_true", help="Забрать все посты сообщества (только API режим)")
     parser.add_argument("--rules-json", help="Путь к JSON с правилами. По умолчанию встроенный preset")
     parser.add_argument("--only-not-blocked", action="store_true", help="Выводить только not_explicit_ad")
     parser.add_argument("--pretty", action="store_true", help="Форматировать JSON вывод с отступами")
@@ -584,6 +615,21 @@ def main() -> int:
     rules = load_rules(args.rules_json)
     classifier = ExplicitAdClassifier(rules)
     client = VKClient(args.token)
+
+    if args.show_total:
+        totals: List[Dict[str, Any]] = []
+        for source in args.domains:
+            try:
+                if mode != "api":
+                    raise RuntimeError("--show-total поддерживается только в API режиме")
+                owner_id = client.resolve_owner_id(source)
+                total = client.fetch_wall_total_api(owner_id)
+                totals.append({"source": source, "owner_id": owner_id, "total_posts": total})
+            except Exception as exc:
+                totals.append({"source": source, "source_mode": mode, "error": str(exc)})
+        print(json.dumps(totals, ensure_ascii=False, indent=2 if args.pretty else None))
+        return 0
+
     run_results: List[Dict[str, Any]] = []
     new_posts: List[Dict[str, Any]] = []
 
@@ -591,8 +637,19 @@ def main() -> int:
         try:
             if mode == "api":
                 owner_id = client.resolve_owner_id(source)
-                posts = client.fetch_wall_posts_api(owner_id=owner_id, count=args.count)
+                if args.all_posts:
+                    posts = client.fetch_wall_posts_api_all(owner_id=owner_id)
+                else:
+                    posts = client.fetch_wall_posts_api(owner_id=owner_id, count=args.count)
             else:
+                if args.all_posts:
+                    run_results.append(
+                        {
+                            "source": source,
+                            "source_mode": mode,
+                            "warning": "--all-posts поддерживается только для API режима; используется --count",
+                        }
+                    )
                 posts = client.fetch_wall_posts_web(domain_or_url=source, count=args.count)
         except Exception as exc:
             run_results.append({"source": source, "error": str(exc), "source_mode": mode})

@@ -45,6 +45,22 @@ python vk_news_parser.py \
   --pretty \
   --html-output vk_posts_report.html \
   --json-output json/posts.json
+
+# Показать сколько всего постов в паблике (API)
+python vk_news_parser.py \
+  --source-mode api \
+  --domains rsportru \
+  --show-total \
+  --pretty
+
+# Забрать все посты одной командой (API)
+python vk_news_parser.py \
+  --source-mode api \
+  --domains rsportru \
+  --all-posts \
+  --pretty \
+  --html-output vk_posts_report.html \
+  --json-output json/posts.json
 ```
 
 
@@ -82,6 +98,8 @@ python vk_news_parser.py --source-mode api --domains lenta_ru https://vk.com/rsp
 - `--count` — число постов на каждый паблик
 - `--source-mode` — `auto | api | web`
 - `--rules-json` — JSON с правилами (по умолчанию встроенный пресет)
+- `--show-total` — показать общее число постов в каждом сообществе и завершить работу (API)
+- `--all-posts` — забрать все посты из сообщества одной командой (API)
 - `--only-not-blocked` — вывести только `not_explicit_ad`
 - `--pretty` — красивый JSON вывод
 - `--html-output` — путь к HTML-отчету (по умолчанию `vk_posts_report.html`)
