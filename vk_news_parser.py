@@ -205,30 +205,20 @@ class VKClient:
             return -obj_id
         return obj_id
 
-    def fetch_wall_posts_api(self, owner_id: int, count: int = 20) -> List[Dict[str, Any]]:
-        resp = self._call(
-            "wall.get",
-            {"owner_id": owner_id, "count": count, "filter": "owner", "extended": 0},
-        )
-        return resp.get("items", [])
+    def _fetch_wall_posts_api_paged(self, owner_id: int, limit: int) -> List[Dict[str, Any]]:
+        safe_limit = max(0, int(limit))
+        if safe_limit == 0:
+            return []
 
-    def fetch_wall_total_api(self, owner_id: int) -> int:
-        resp = self._call(
-            "wall.get",
-            {"owner_id": owner_id, "count": 1, "filter": "owner", "extended": 0},
-        )
-        return int(resp.get("count", 0))
-
-    def fetch_wall_posts_api_all(self, owner_id: int, step: int = 100) -> List[Dict[str, Any]]:
-        total = self.fetch_wall_total_api(owner_id)
         posts: List[Dict[str, Any]] = []
         offset = 0
-        while offset < total:
+        while len(posts) < safe_limit:
+            chunk = min(100, safe_limit - len(posts))
             resp = self._call(
                 "wall.get",
                 {
                     "owner_id": owner_id,
-                    "count": step,
+                    "count": chunk,
                     "offset": offset,
                     "filter": "owner",
                     "extended": 0,
@@ -240,6 +230,22 @@ class VKClient:
             posts.extend(items)
             offset += len(items)
         return posts
+
+    def fetch_wall_posts_api(self, owner_id: int, count: int = 20) -> List[Dict[str, Any]]:
+        return self._fetch_wall_posts_api_paged(owner_id=owner_id, limit=count)
+
+    def fetch_wall_total_api(self, owner_id: int) -> int:
+        resp = self._call(
+            "wall.get",
+            {"owner_id": owner_id, "count": 1, "filter": "owner", "extended": 0},
+        )
+        return int(resp.get("count", 0))
+
+    def fetch_wall_posts_api_all(self, owner_id: int, step: int = 100) -> List[Dict[str, Any]]:
+        total = self.fetch_wall_total_api(owner_id)
+        if total <= 0:
+            return []
+        return self._fetch_wall_posts_api_paged(owner_id=owner_id, limit=total)
 
     def fetch_wall_posts_web(self, domain_or_url: str, count: int = 20) -> List[Dict[str, Any]]:
         domain = normalize_domain(domain_or_url)
