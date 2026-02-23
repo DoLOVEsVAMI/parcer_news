@@ -452,13 +452,14 @@ def image_url_to_data_uri(url: str) -> str:
     return f"data:{ctype};base64,{encoded}"
 
 
-def render_html_report(results: List[Dict[str, Any]], output_path: str) -> None:
+def render_html_report(results: List[Dict[str, Any]], output_path: str, embed_images: bool = False) -> None:
     generated_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     cards: List[str] = []
 
     data_uri_cache: Dict[str, str] = {}
+    progress = ProgressBar(total=len(results) if results else 1, prefix="HTML отчет")
 
-    for item in results:
+    for idx, item in enumerate(results, start=1):
         if "error" in item:
             cards.append(
                 (
@@ -469,6 +470,7 @@ def render_html_report(results: List[Dict[str, Any]], output_path: str) -> None:
                     '</article>'
                 )
             )
+            progress.update(idx)
             continue
 
         if "warning" in item:
@@ -480,6 +482,7 @@ def render_html_report(results: List[Dict[str, Any]], output_path: str) -> None:
                     '</article>'
                 )
             )
+            progress.update(idx)
             continue
 
         post_text = html.escape(normalize_post_text(str(item.get("text", ""))))
@@ -491,12 +494,13 @@ def render_html_report(results: List[Dict[str, Any]], output_path: str) -> None:
             for photo_url in photo_urls:
                 safe_url = html.escape(str(photo_url))
                 display_src = safe_url
-                if safe_url not in data_uri_cache:
-                    try:
-                        data_uri_cache[safe_url] = image_url_to_data_uri(str(photo_url))
-                    except Exception:
-                        data_uri_cache[safe_url] = safe_url
-                display_src = html.escape(data_uri_cache[safe_url])
+                if embed_images:
+                    if safe_url not in data_uri_cache:
+                        try:
+                            data_uri_cache[safe_url] = image_url_to_data_uri(str(photo_url))
+                        except Exception:
+                            data_uri_cache[safe_url] = safe_url
+                    display_src = html.escape(data_uri_cache[safe_url])
                 images.append(
                     f'<a href="{safe_url}" target="_blank" rel="noopener"><img src="{display_src}" loading="lazy" alt="photo" /></a>'
                 )
@@ -511,6 +515,7 @@ def render_html_report(results: List[Dict[str, Any]], output_path: str) -> None:
                 '</article>'
             )
         )
+        progress.update(idx)
 
     html_doc = f"""<!doctype html>
 <html lang=\"ru\">
@@ -558,6 +563,7 @@ def render_html_report(results: List[Dict[str, Any]], output_path: str) -> None:
 
     with open(output_path, "w", encoding="utf-8") as f:
         f.write(html_doc)
+    progress.close()
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -573,6 +579,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--pretty", action="store_true", help="Форматировать JSON вывод с отступами")
     parser.add_argument("--html-output", default="vk_posts_report.html", help="Путь для HTML-отчета")
     parser.add_argument("--json-output", default="json/posts.json", help="Путь для JSON-файла с накоплением постов")
+    parser.add_argument(
+        "--embed-images",
+        action="store_true",
+        help="Встраивать изображения в HTML как data URI (медленнее, но отчет самодостаточный)",
+    )
     return parser
 
 
@@ -738,7 +749,7 @@ def main() -> int:
     with open(args.json_output, "w", encoding="utf-8") as f:
         json.dump(merged_posts, f, ensure_ascii=False, indent=2)
 
-    render_html_report(merged_posts, args.html_output)
+    render_html_report(merged_posts, args.html_output, embed_images=args.embed_images)
     print(json.dumps(run_results, ensure_ascii=False, indent=2 if args.pretty else None))
     return 0
 
