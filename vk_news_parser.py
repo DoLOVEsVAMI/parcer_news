@@ -108,6 +108,29 @@ class Rule:
     strong: bool
 
 
+class ProgressBar:
+    def __init__(self, total: int, prefix: str = "Progress", width: int = 28) -> None:
+        self.total = max(1, int(total))
+        self.prefix = prefix
+        self.width = width
+        self.current = 0
+        self.enabled = sys.stdout.isatty()
+
+    def update(self, current: int) -> None:
+        self.current = max(0, min(current, self.total))
+        if not self.enabled:
+            return
+        ratio = self.current / self.total
+        filled = int(self.width * ratio)
+        bar = "#" * filled + "-" * (self.width - filled)
+        percent = int(ratio * 100)
+        print(f"\r{self.prefix}: [{bar}] {self.current}/{self.total} ({percent}%)", end="", flush=True)
+
+    def close(self) -> None:
+        if self.enabled:
+            print()
+
+
 class ExplicitAdClassifier:
     def __init__(self, config: Dict[str, Any]) -> None:
         self.score_threshold = int(config["decision"].get("score_threshold", 10))
@@ -212,6 +235,7 @@ class VKClient:
 
         posts: List[Dict[str, Any]] = []
         offset = 0
+        progress = ProgressBar(total=safe_limit, prefix=f"VK API {owner_id}")
         while len(posts) < safe_limit:
             chunk = min(100, safe_limit - len(posts))
             resp = self._call(
@@ -229,6 +253,8 @@ class VKClient:
                 break
             posts.extend(items)
             offset += len(items)
+            progress.update(len(posts))
+        progress.close()
         return posts
 
     def fetch_wall_posts_api(self, owner_id: int, count: int = 20) -> List[Dict[str, Any]]:
@@ -671,10 +697,12 @@ def main() -> int:
             )
             continue
 
+        process_progress = ProgressBar(total=len(posts), prefix=f"Обработка {source}")
         for post in posts:
             text = normalize_post_text(post.get("text", "") or "")
             verdict = classifier.classify(text)
             if args.only_not_blocked and verdict["blocked"]:
+                process_progress.update(process_progress.current + 1)
                 continue
 
             owner_id = post.get("owner_id")
@@ -698,6 +726,8 @@ def main() -> int:
 
             run_results.append(item)
             new_posts.append(item)
+            process_progress.update(process_progress.current + 1)
+        process_progress.close()
 
     json_output_dir = os.path.dirname(args.json_output)
     if json_output_dir:
