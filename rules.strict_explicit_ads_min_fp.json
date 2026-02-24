@@ -1,0 +1,83 @@
+{
+  "version": "1.0",
+  "preset": "strict_explicit_ads_min_fp",
+  "scope": ["telegram", "vk"],
+  "decision": {
+    "mode": "rule_based_then_score",
+    "block_if_any_strong_rule_matches": true,
+    "score_threshold": 10,
+    "notes": [
+      "Отсекаем только посты с явной маркировкой/идентификатором рекламы.",
+      "Промокоды/скидки/цены/CTA НЕ являются достаточными причинами для отсечения.",
+      "Если нет 'strong' маркеров — пост считаем не рекламой (чтобы не ловить FP)."
+    ]
+  },
+  "rules": {
+    "strong_blocklist": [
+      {
+        "id": "label_reklama",
+        "type": "regex",
+        "weight": 10,
+        "pattern": "(?i)(^|\\s|[\\[({«])реклама($|\\s|[\\])}».,!?:;])",
+        "reason": "Явная пометка «Реклама»"
+      },
+      {
+        "id": "has_erid",
+        "type": "regex",
+        "weight": 10,
+        "pattern": "(?i)\\berid\\s*[:=]\\s*[a-z0-9_-]{6,}|[?&]erid=[a-z0-9_-]{6,}|\\bЕРИД\\b|\\bЕRID\\b",
+        "reason": "ERID-токен в тексте/ссылке"
+      },
+      {
+        "id": "ad_hashtags",
+        "type": "regex",
+        "weight": 9,
+        "pattern": "(?i)#\\s*(реклама|ad|ads|sponsored|спонсор|партнерство|партнёрство|промо)\\b",
+        "reason": "Явные рекламные хештеги"
+      },
+      {
+        "id": "explicit_sponsored_phrase",
+        "type": "regex",
+        "weight": 8,
+        "pattern": "(?i)\\b(на правах рекламы|спонсор(ированный|ское)?|пост подготовлен при поддержке|партн(е|ё)рский материал|в сотрудничестве с)\\b",
+        "reason": "Явные формулировки спонсорства/партнерства"
+      },
+      {
+        "id": "explicit_advertiser_field",
+        "type": "regex",
+        "weight": 8,
+        "pattern": "(?i)\\b(рекламодатель|заказчик)\\s*[:—-]",
+        "reason": "Явное поле 'рекламодатель/заказчик'"
+      }
+    ],
+    "optional_support_signals": [
+      {
+        "id": "utm_or_affiliate",
+        "type": "regex",
+        "weight": 2,
+        "pattern": "(?i)[?&]utm_(source|medium|campaign|content|term)=[^\\s]+|[?&](ref|aff|affiliate|partner|promo)=([^\\s]+)",
+        "notes": "Только как усилитель, НЕ блокируем по нему"
+      },
+      {
+        "id": "promo_discount_price",
+        "type": "regex",
+        "weight": 1,
+        "pattern": "(?i)\\b(промокод|скидк|акци|распродаж|кэшбэк|cashback|\\d{2,}\\s*(₽|руб\\.?|р\\.?|\\$|€))\\b",
+        "notes": "Много FP — используем только как слабое усиление"
+      },
+      {
+        "id": "cta_soft",
+        "type": "regex",
+        "weight": 1,
+        "pattern": "(?i)\\b(переходи(те)? по ссылке|жми(те)?|оформ(и|ля)ть|закаж(и|ите)|остав(ь|ьте) заявку|пиши(те)? в лс|в директ)\\b",
+        "notes": "Не блокируем по CTA"
+      }
+    ]
+  },
+  "output": {
+    "label_if_blocked": "explicit_ad",
+    "label_if_not_blocked": "not_explicit_ad",
+    "explain": true,
+    "explain_fields": ["matched_rule_ids", "matched_fragments", "score"]
+  }
+}
